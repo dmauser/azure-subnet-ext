@@ -6,9 +6,74 @@ az account set --subscription "Your Subscription Name"
 #Paramters
 rg=lab-azsubnet-ext
 location=southcentralus
+sharekey=abc123
+username=azureuser
+password=Msft123Msft123
 
 az group create --name $rg --location $location
 az deployment group create --name Hub1-$location --resource-group $rg \
 --template-uri https://raw.githubusercontent.com/dmauser/azure-hub-spoke-base-lab/main/azuredeploy.json \
 --parameters https://raw.githubusercontent.com/dmauser/azure-subnet-ext/main/parameters1.json \
 --no-wait
+
+# Check deployment Hub1-$location status
+az deployment group show --resource-group $rg --name Hub1-$location --query properties.provisioningState -o tsv
+
+# Only continue when deployment is completed
+while [ "$(az deployment group show --resource-group $rg --name Hub1-$location --query properties.provisioningState -o tsv)" != "Succeeded" ]; do echo "Waiting for deployment to complete"; sleep 10; done
+
+# List VPN connections
+az network vpn-connection list --resource-group $rg --query "[].{Name:name,Ip:ipConfigurations[0].privateIpAddress}" -o table
+# List and remove all VPN connections
+vpnconn=$(az network vpn-connection list --resource-group $rg --query "[].name" -o tsv)
+for i in $vpnconn; do az network vpn-connection delete --name $i --resource-group $rg; done
+
+# Create Local Network Gateway for OnPrem
+az network local-gateway create --resource-group $rg --name onprem-lngw \
+--gateway-ip-address $(az network public-ip show --resource-group $rg --name OnPrem-vpngw-pip1 --query "ipAddress" -o tsv) \
+--local-address-prefixes 192.168.100.0/24 \
+--output none
+
+# Create Local Network Gateway for Azure 
+az network local-gateway create --resource-group $rg --name azure-lngw \
+--gateway-ip-address $(az network public-ip show --resource-group $rg --name Az-Hub1-vpngw-pip1 --query "ipAddress" -o tsv) \
+--local-address-prefixes 10.1.0.0/16 10.2.0.0/16 10.3.0.0/16 \
+--output none
+
+# Built VPN connection from OnPrem to Azure
+az network vpn-connection create --name OnPrem-to-Az-Hub1 --resource-group $rg \
+--vnet-gateway1 OnPrem-vpngw --local-gateway2 azure-lngw \
+--shared-key $sharekey --output none
+
+# Built VPN connection from Azure to OnPrem
+az network vpn-connection create --name Az-Hub1-to-OnPrem --resource-group $rg \
+--vnet-gateway1 Az-Hub1-vpngw --local-gateway2 onprem-lngw \
+--shared-key $sharekey --output none
+
+# Get Azure VNETs information from RG
+az network vnet list --resource-group $rg --query "[].{Name:name,AddressSpace:addressSpace.addressPrefixes[0]}" -o table
+
+# Subnet Extention
+# Add 172.16.0.0/24 a new VNET address space to exisiting OnPrem-vnet and Az-spk1-vnet
+az network vnet update --resource-group $rg --name OnPrem-vnet --address-prefixes 192.168.100.0/24 172.16.0.0/24 -o none
+az network vnet update --resource-group $rg --name Az-spk1-vnet --address-prefixes 10.2.0.0/16 172.16.0.0/24 -o none
+
+# Create a new subnet in OnPrem-vnet
+az network vnet subnet create --resource-group $rg --vnet-name OnPrem-vnet --name subnext --address-prefixes 172.16.0.0/24 --output none
+# Create a new subnet in Az-spk1-vnet
+az network vnet subnet create --resource-group $rg --vnet-name Az-spk1-vnet --name subnext --address-prefixes 172.16.0.0/24 --output none
+
+# Deploy two Windows Server 2022 VMs to OnPrem-vnet using small disk size using cli usind az vm create
+az vm create --resource-group $rg --name onprem-winvm1 --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-smalldisk-g2:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --vnet-name OnPrem-vnet --subnet subnet1 --public-ip-address onprem-winvm1-pip --output none --no-wait
+az vm create --resource-group $rg --name onprem-wingw --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-smalldisk-g2:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --vnet-name OnPrem-vnet --subnet subnet1 --public-ip-address onprem-wingw-pip --output none --no-wait
+
+# Deploy Windows Server 2022 VM to Az-spk1-vnet using small disk size using cli usind az vm create
+az vm create --resource-group $rg --name az-spk1-wingw --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-smalldisk:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --vnet-name Az-spk1-vnet --subnet subnet1 --public-ip-address az-spk1-wingw-pip --output none --no-wait
+
+
+# **** Danger Zone **** 
+# Clean up by deleting resource group
+az group delete --name $rg --yes --no-wait
+
+
+
