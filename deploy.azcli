@@ -1,5 +1,14 @@
+#Check Default subscription
+az account list --query "[].{Name:name,Default:isDefault}" -o table
+# Set Default subscription
+az account set --subscription "Your Subscription Name"
+
+#Paramters
+rg=lab-azsubnet-ext
+location=southcentralus
+
 az group create --name $rg --location $location
 az deployment group create --name Hub1-$location --resource-group $rg \
 --template-uri https://raw.githubusercontent.com/dmauser/azure-hub-spoke-base-lab/main/azuredeploy.json \
---parameters https://raw.githubusercontent.com/dmauser/azure-hub-spoke/main/er-hub-transit/parameters1.json \
+--parameters https://raw.githubusercontent.com/dmauser/azure-subnet-ext/main/parameters1.json \
 --no-wait
