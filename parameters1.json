@@ -9,7 +9,7 @@
             "value": "true"
         },
         "deployOnpremisesVPNGateway": {
-            "value": "true"
+            "value": "false"
         },
         "gatewaySku": {
             "value": "VpnGw1"

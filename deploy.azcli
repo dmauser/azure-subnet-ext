@@ -3,7 +3,6 @@ az account list --query "[].{Name:name,Default:isDefault}" -o table
 # Set Default subscription prompt it
 az account set --subscription "Your Subscription Name"
 
-
 #Paramters
 rg=lab-azsubnet-ext
 location=southcentralus
@@ -67,36 +66,15 @@ az network vnet subnet create --resource-group $rg --vnet-name Az-Hub1-vnet --na
 az network public-ip create --resource-group $rg --name Az-Hub1-bastion-pip --sku Standard --location $location --output none
 # Deploy Azure Bastion on Az-Hub1-vnet
 az network bastion create --name Az-Hub1-bastion --resource-group $rg --vnet-name Az-Hub1-vnet --public-ip-address Az-Hub1-bastion-pip --sku basic --location $location --output none --no-wait
-# Create Azure bastion subnet in OnPrem-vnet
-az network vnet subnet create --resource-group $rg --vnet-name OnPrem-vnet --name AzureBastionSubnet --address-prefixes 192.168.100.192/26 --output none
-# Create Public IP for Azure Bastion
-az network public-ip create --resource-group $rg --name OnPrem-bastion-pip --sku Standard --location $location --output none
-# Deploy Azure Bastion on OnPrem-vnet
-az network bastion create --name OnPrem-bastion --resource-group $rg --vnet-name OnPrem-vnet --public-ip-address OnPrem-bastion-pip --sku basic --location $location --output none --no-wait 
-
-# Deploy two Windows Server 2022 VMs to OnPrem-vnet using small disk size using cli usind az vm create
-az vm create --resource-group $rg --name onprem-winvm1 --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-smalldisk-g2:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --vnet-name OnPrem-vnet --subnet subnet1 --public-ip-address "" --output none --no-wait
-az vm create --resource-group $rg --name onprem-wingw --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-smalldisk-g2:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --vnet-name OnPrem-vnet --subnet subnet1 --public-ip-address "" --output none --no-wait
 
 # Deploy Windows Server 2022 VM to Az-spk1-vnet using small disk size using cli usind az vm create
 az vm create --resource-group $rg --name az-spk1-wingw --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-smalldisk:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --vnet-name Az-spk1-vnet --subnet subnet1 --public-ip-address "" --output none --no-wait
 
-# Deploy Ubuntu VM to subnet subnext in OnPrem-vnet using cli usind az vm create and static IP address 172.16.0.100
-az vm create --resource-group $rg --name onprem-extvm --image UbuntuLTS --size Standard_B1ms --admin-username $username --admin-password $password --vnet-name OnPrem-vnet --subnet subnext --public-ip-address "" --private-ip-address 172.16.0.100 --nsg "" --output none --no-wait 
 # Deploy Ubuntu VM to subnet subnext in Az-spk1-vnet using cli usind az vm create and static IP 172.16.0.10
 az vm create --resource-group $rg --name az-spk1-extvm --image UbuntuLTS --size Standard_B1ms --admin-username $username --admin-password $password --vnet-name Az-spk1-vnet --subnet subnext --public-ip-address "" --private-ip-address  172.16.0.10 --nsg "" --output none --no-wait
 
-
 # List all VMs from RG and their private IP addresses
 az vm list-ip-addresses --resource-group $rg --query "[].{Name:virtualMachine.name,PrivateIP:virtualMachine.network.privateIpAddresses[0]}" -o table
-
-# Create a network interface card for onprem-wingw VM on subnet subnext with static IP
-az network nic create --resource-group $rg --name onprem-wingw-nic2 --vnet-name OnPrem-vnet --subnet subnext --private-ip-address 172.16.0.4 --output none
-
-# Stop and deallocate onprem-wingw VM
-az vm deallocate --resource-group $rg --name onprem-wingw --output none
-az vm nic add --nics onprem-wingw-nic2 --resource-group $rg --vm-name onprem-wingw --output none
-az vm start --resource-group $rg --name onprem-wingw --output none --no-wait
 
 # Create a network interface card for az-spk1-wingw on subnet subnext with static IP
 az network nic create --resource-group $rg --name az-spk1-wingw-nic2 --vnet-name Az-spk1-vnet --subnet subnext --private-ip-address 172.16.0.5 --output none
@@ -106,21 +84,20 @@ az vm deallocate --resource-group $rg --name az-spk1-wingw --output none
 az vm nic add --nics az-spk1-wingw-nic2 --resource-group $rg --vm-name az-spk1-wingw --output none
 az vm start --resource-group $rg --name az-spk1-wingw --output none --no-wait
 
-# Run a powershell commmand on onprem-wingw VM
-Install-WindowsFeature -Name Hyper-V -IncludeManagementTools -Restart
 # Run a powershell commmand on az-spk1-wingw VM	
 Install-WindowsFeature -Name Hyper-V -IncludeManagementTools -Restart	
-
-# Run power shell command get network adapter names and ip addresses
-Get-NetAdapter | Select-Object Name, InterfaceDescription, Status, MacAddress, IPv4Address, IPv6Address
 
 # Run powershell command to allow ICMPv4 and ICMPv6 traffic for all Windows VMs
 winvm=$(az vm list --resource-group $rg --query "[?storageProfile.osDisk.osType=='Windows'].{Name:name}" -o tsv)
 for vm in $winvm; 
 do 
- az vm run-command invoke --resource-group $rg --name $vm --command-id RunPowerShellScript --scripts "Set-NetFirewallRule -DisplayName 'File and Printer Sharing (Echo Request - ICMPv4-In)' -Enabled True" --output none; 
+ az vm run-command invoke --resource-group $rg --name $vm --command-id RunPowerShellScript --scripts "Set-NetFirewallRule -DisplayName 'File and Printer Sharing (Echo Request - ICMPv4-In)' -Enabled True" --no-wait --output none; 
 done
 
+# On-premises using Hyper-v
+
+# Run power shell command get network adapter names and ip addresses
+Get-NetAdapter 
 
 New-VMSwitch -Name "External" -AllowManagementOS $true -NetAdapterName "Ethernet"
 New-VMSwitch -Name "Extended" -AllowManagementOS $true -NetAdapterName "Ethernet 2"
