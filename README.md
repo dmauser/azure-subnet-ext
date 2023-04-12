@@ -15,7 +15,6 @@ On-Premises side:
 6. Install Hyper-V role on Windows Server 2022 VM
 7. Install Windows Admin Center
 
-
 References:
 https://learn.microsoft.com/en-us/azure/virtual-network/subnet-extension
 
@@ -32,3 +31,5 @@ https://github.com/microsoft/Azure-LISP
 To do:
 - Remove Public IP from All VMS (update JSON) + Bastion
 - Automate part of the Windows 2022 Extended Subnet portion.
+- 
+- 

@@ -111,3 +111,5 @@ az group delete --name $rg --yes --no-wait
 
 
 
+
+
