@@ -4,7 +4,6 @@ Lab notes for Subnet Extension feature using Windows Server 2022
 
 Azure side:
 1. Deploy script which builds an Hub and two Spokes
-2. 
 
 On-Premises side:
 1. Hyper-V on Windows 11

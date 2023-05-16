@@ -1,0 +1,156 @@
+#Check Default subscription
+az account list --query "[].{Name:name,Default:isDefault}" -o table
+# (Optional) Set Default subscription prompt it
+# az account set --subscription "Your Subscription Name"
+az account set --subscription MSDN_Dmauser
+
+#Paramters
+rg=lab-azsubnet-ext
+location=southcentralus
+username=azureuser
+password=Msft123Msft123
+sharekey=abc123
+vnet_address_space1=10.0.0.0/24
+vnet_address_space2=172.16.0.0/24
+subnet1_name=subnet1
+subnet1_address_prefix=10.0.0.0/27
+subnet2_name=workload
+subnet2_address_prefix=172.16.0.0/24
+gateway_address_prefix=10.0.0.32/27
+bastion_subnet_address_prefix=10.0.0.64/26
+OnpremisesVPNPublicIP=$(curl -4 -s ifconfig.me) # Adjust based on your scenario
+OnpremisesAddressPrefix=192.168.1.0/24 
+
+# Create Resource Group
+az group create --name $rg --location $location -o none
+
+echo "Creating VNET and Subnets..."
+# Create VNET and subnet1
+az network vnet create -g $rg --name vnet1 --address-prefix $vnet_address_space1 $vnet_address_space2 --subnet-name $subnet1_name --subnet-prefix $subnet1_address_prefix --output none
+# Create subnet2
+az network vnet subnet create -g $rg --vnet-name vnet1 --name $subnet2_name --address-prefix $subnet2_address_prefix --output none
+
+# Create NSG for subnet1 and subnet2
+az network nsg create -g $rg --name nsg1 --location $location --output none
+# Attach NSG to subnet1 and subnet2
+az network vnet subnet update -g $rg --vnet-name vnet1 --name $subnet1_name --nsg nsg1 --output none
+az network vnet subnet update -g $rg --vnet-name vnet1 --name $subnet2_name --nsg nsg1 --output none
+
+echo "Creating VMs..."
+# Create Nic1 on Subnet1
+az network nic create -g $rg --name winnva1-nic1 --vnet-name vnet1 --subnet $subnet1_name --output none
+# Create Nic2 on Subnet2
+az network nic create -g $rg --name winnva1-nic2 --vnet-name vnet1 --subnet $subnet2_name --output none
+# Create Windows VM with both nics and no public IP (VM must use Standard_D2s_v3 to get Hyper-V support)
+az vm create -g $rg --name winnva1 --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-smalldisk:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --nics winnva1-nic1 winnva1-nic2 --nsg "" --public-ip-address "" --output none --no-wait
+# Loop until VM is created
+while [ $(az vm show -g $rg -n winnva1 --query provisioningState -o tsv) != "Succeeded" ]; do echo "Waiting for VM to be created..."; sleep 15; done
+# Run powershell command on winvnva1 to install Hyper-V
+az vm run-command invoke -g $rg -n winnva1 --command-id RunPowerShellScript --scripts "Install-WindowsFeature -Name Hyper-V -IncludeManagementTools -Restart" --output none --no-wait
+
+# Automate
+# Run power shell command get network adapter names and ip addresses
+Get-NetAdapter 
+Get-NetIPAddress | Format-Table
+Get-NetIPConfiguration | Format-Table InterfaceAlias,IPV4Address
+
+New-VMSwitch -Name "External" -AllowManagementOS $true -NetAdapterName "Ethernet 2"
+New-VMSwitch -Name "Extended" -AllowManagementOS $true -NetAdapterName "Ethernet"
+
+
+
+
+# Create Ubuntu VM on Subnet1 and no public IP
+az vm create -g $rg --name lxvm1 --image Ubuntu2204 --admin-username $username --admin-password $password --vnet-name vnet1 --subnet $subnet1_name --nsg "" --public-ip-address "" --output none --no-wait
+
+# Create Ubuntu VM on Subnet2 and no public IP
+az vm create -g $rg --name lxvm2 --image Ubuntu2204 --admin-username $username --admin-password $password --vnet-name vnet1 --subnet $subnet2_name --nsg "" --public-ip-address "" --output none --no-wait
+
+
+echo "Creating Azure Bastion..."
+# Create Azure Bastion public ip
+az network public-ip create -g $rg --name azbastion-pip --sku Standard --location $location --output none
+# Create Azure Bastion subnet
+az network vnet subnet create -g $rg --vnet-name vnet1 --name AzureBastionSubnet --address-prefix $bastion_subnet_address_prefix --output none
+# Create Azure Bastion with native client support
+az network bastion create -g $rg --name azbastion --public-ip-address azbastion-pip --vnet-name vnet1 --location $location --output none --no-wait --enable-tunneling
+
+echo "Creating VPN Gateway..."
+# Create VPN Gateway subnet
+az network vnet subnet create -g $rg --vnet-name vnet1 --name GatewaySubnet --address-prefix $gateway_address_prefix --output none
+# Create Public IP for VPN Gateway
+az network public-ip create -g $rg --name azvpngw-pip --allocation-method Dynamic --output none
+# Create VPN Gateway
+az network vnet-gateway create -g $rg --name azvpngw --public-ip-address azvpngw-pip --vnet vnet1 --gateway-type Vpn --vpn-type RouteBased --sku VpnGw1 --output none --no-wait
+# Create Local Network Gateway
+az network local-gateway create -g $rg --name lngw-onprem --gateway-ip-address $OnpremisesVPNPublicIP --local-address-prefixes $OnpremisesAddressPrefix --output none --no-wait
+# Loop until VPN Gateway is created
+while [ $(az network vnet-gateway show -g $rg -n azvpngw --query provisioningState -o tsv) != "Succeeded" ]; do echo "Waiting for VPN Gateway to be created..."; sleep 30; done
+# Create VPN Connection
+az network vpn-connection create -g $rg --name onprem-conn --vnet-gateway1 azvpngw --shared-key $sharekey --local-gateway2 lngw-onprem --location $location --output none
+
+echo "Dump VPN Gateway Public IP..."
+# Dump VPN Gateway Public IP
+az network public-ip show -g $rg -n azvpngw-pip --query ipAddress -o tsv
+
+
+
+# Run powershell command to allow ICMPv4 and ICMPv6 traffic for all Windows VMs
+winvm=$(az vm list --resource-group $rg --query "[?storageProfile.osDisk.osType=='Windows'].{Name:name}" -o tsv)
+for vm in $winvm; 
+do 
+ az vm run-command invoke --resource-group $rg --name $vm --command-id RunPowerShellScript --scripts "Set-NetFirewallRule -DisplayName 'File and Printer Sharing (Echo Request - ICMPv4-In)' -Enabled True" --no-wait --output none; 
+done
+
+# Optional - Subscription Cost Savings
+# Configure a loop command for each VM in  from the RG to auto-shutdown at 12:00 AM on the US Central Time Zone
+for vm in $(az vm list -g $rg --query "[].name" -o tsv); do az vm auto-shutdown -g $rg -n $vm --time 05:00 -o none ; done
+
+# Delete Azure Bastion 
+az network bastion delete -g $rg -n azbastion --no-wait --output none
+
+# Restart VMs on the resource group
+az vm restart --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
+
+# Check all VMs are running
+az vm list -g $rg --query "[].{Name:name, ProvisioningState:provisioningState}" -o table
+
+# Stop and deallocate all VMs in the resource group
+az vm deallocate --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
+
+# Delete all VPN connections
+az network vpn-connection list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az network vpn-connection delete --name {} --resource-group $rg --output none
+# Delete VPN Gateway
+az network vnet-gateway delete --name azvpngw --resource-group $rg --output none
+
+
+
+
+
+
+# Access lnxvm1 Azure Bastion native client
+rg="lab-azsubnet-ext"
+username=azureuser
+az network bastion ssh -g $rg -n azbastion --target-resource-id $(az vm show -g $rg -n lxvm1 --query id -o tsv) --auth-type password --username $username --output none
+
+
+# Access lnxvm2 Azure Bastion native client
+rg="lab-azsubnet-ext"
+az network bastion ssh -g $rg -n azbastion --target-resource-id $(az vm show -g $rg -n lxvm2 --query id -o tsv) --auth-type password --username $username --output none
+
+
+
+# Access winnva1 Azure Bastion native client (Run over CMD or Powershell)
+$rg = "lab-azsubnet-ext"
+az network bastion rdp -g $rg -n azbastion --target-resource-id $(az vm show -g $rg -n winnva1 --query id -o tsv) --output none
+
+# Create UDR for subnet2 to route 192.168.0.0/24 to 172.16.0.251
+az network route-table create -g $rg --name subnet2-rt --location $location --output none
+az network route-table route create -g $rg --name onprem --route-table-name subnet2-rt --address-prefix 192.168.1.0/24 --next-hop-type VirtualAppliance --next-hop-ip-address 172.16.0.251 --output none
+
+# Associate UDR to subnet2
+az network vnet subnet update -g $rg --vnet-name vnet1 --name $subnet2_name --route-table subnet2-rt --output none
+
+
+
+

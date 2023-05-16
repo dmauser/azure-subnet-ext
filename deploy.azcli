@@ -3,12 +3,14 @@ az account list --query "[].{Name:name,Default:isDefault}" -o table
 # Set Default subscription prompt it
 az account set --subscription "Your Subscription Name"
 
+
 #Paramters
 rg=lab-azsubnet-ext
 location=southcentralus
 sharekey=abc123
 username=azureuser
 password=Msft123Msft123
+
 
 az group create --name $rg --location $location
 az deployment group create --name Hub1-$location --resource-group $rg \
@@ -37,18 +39,13 @@ az network local-gateway create --resource-group $rg --name azure-lngw \
 --local-address-prefixes 10.0.0.0/24 10.0.1.0/24 10.0.2.0/24 \
 --output none
 
-# Built VPN connection from OnPrem to Azure
-az network vpn-connection create --name OnPrem-to-Az-Hub1 --resource-group $rg \
---vnet-gateway1 OnPrem-vpngw --local-gateway2 azure-lngw \
---shared-key $sharekey --output none
-
 # Built VPN connection from Azure to OnPrem
 az network vpn-connection create --name Az-Hub1-to-OnPrem --resource-group $rg \
 --vnet-gateway1 Az-Hub1-vpngw --local-gateway2 onprem-lngw \
 --shared-key $sharekey --output none
 
-# Get Azure VNETs information from RG
-az network vnet list --resource-group $rg --query "[].{Name:name,AddressSpace:addressSpace.addressPrefixes[0]}" -o table
+# List public IPS that contains vpngw
+az network public-ip list --resource-group $rg --query "[?contains(name,'vpngw')].{Name:name,IP:ipAddress}" -o table
 
 # Subnet Extention
 # Add 172.16.0.0/24 a new VNET address space to exisiting OnPrem-vnet and Az-spk1-vnet
@@ -105,11 +102,23 @@ New-VMSwitch -Name "Extended" -AllowManagementOS $true -NetAdapterName "Ethernet
 # Install Admin Center on onprem-winvm 
 https://learn.microsoft.com/en-us/windows-server/manage/windows-admin-center/overview
 
+# Delete all VPN connections
+az network vpn-connection list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az network vpn-connection delete --name {} --resource-group $rg --no-wait --output none
+# Delete VPN Gateway
+az network vnet-gateway delete --name OnPrem-vpngw --resource-group $rg --no-wait --output none
+
+# Shutdown and deallocate all VMs in the RG
+az vm list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az vm deallocate --name {} --resource-group $rg --no-wait --output none
+
+# Start all VMs in the RG
+az vm list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az vm start --name {} --resource-group $rg --no-wait --output none
+
+
 # **** Danger Zone **** 
 # Clean up by deleting resource group
 az group delete --name $rg --yes --no-wait
 
-
-
+# List default subscription
+az account show --query "{Name:name,Id:id,State:state,TenantId:tenantId,IsDefault:isDefault}" -o table
 
 
