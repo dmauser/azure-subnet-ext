@@ -57,15 +57,11 @@ Get-NetIPConfiguration | Format-Table InterfaceAlias,IPV4Address
 New-VMSwitch -Name "External" -AllowManagementOS $true -NetAdapterName "Ethernet 2"
 New-VMSwitch -Name "Extended" -AllowManagementOS $true -NetAdapterName "Ethernet"
 
-
-
-
 # Create Ubuntu VM on Subnet1 and no public IP
 az vm create -g $rg --name lxvm1 --image Ubuntu2204 --admin-username $username --admin-password $password --vnet-name vnet1 --subnet $subnet1_name --nsg "" --public-ip-address "" --output none --no-wait
 
 # Create Ubuntu VM on Subnet2 and no public IP
 az vm create -g $rg --name lxvm2 --image Ubuntu2204 --admin-username $username --admin-password $password --vnet-name vnet1 --subnet $subnet2_name --nsg "" --public-ip-address "" --output none --no-wait
-
 
 echo "Creating Azure Bastion..."
 # Create Azure Bastion public ip
@@ -93,7 +89,19 @@ echo "Dump VPN Gateway Public IP..."
 # Dump VPN Gateway Public IP
 az network public-ip show -g $rg -n azvpngw-pip --query ipAddress -o tsv
 
-
+### Installing tools for networking connectivity validation such as traceroute, tcptraceroute, iperf and others (check link below for more details) 
+echo "Installing net utilities inside VMs (traceroute, tcptraceroute, iperf3, hping3, and others)"
+nettoolsuri="https://raw.githubusercontent.com/dmauser/azure-vm-net-tools/main/script/nettools.sh"
+for vm in `az vm list -g $rg --query "[?storageProfile.imageReference.publisher=='Canonical'].name" -o tsv`
+do
+ az vm extension set \
+ --resource-group $rg \
+ --vm-name $vm \
+ --name customScript \
+ --publisher Microsoft.Azure.Extensions \
+ --protected-settings "{\"fileUris\": [\"$nettoolsuri\"],\"commandToExecute\": \"./nettools.sh\"}" \
+ --no-wait
+done
 
 # Run powershell command to allow ICMPv4 and ICMPv6 traffic for all Windows VMs
 winvm=$(az vm list --resource-group $rg --query "[?storageProfile.osDisk.osType=='Windows'].{Name:name}" -o tsv)
@@ -108,13 +116,8 @@ for vm in $(az vm list -g $rg --query "[].name" -o tsv); do az vm auto-shutdown 
 
 # Delete Azure Bastion 
 az network bastion delete -g $rg -n azbastion --no-wait --output none
-
 # Restart VMs on the resource group
 az vm restart --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
-
-# Check all VMs are running
-az vm list -g $rg --query "[].{Name:name, ProvisioningState:provisioningState}" -o table
-
 # Stop and deallocate all VMs in the resource group
 az vm deallocate --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
 
@@ -123,9 +126,11 @@ az network vpn-connection list --resource-group $rg --query "[].{Name:name}" -o 
 # Delete VPN Gateway
 az network vnet-gateway delete --name azvpngw --resource-group $rg --output none
 
+# Start all VMs in the resource group
+az vm start --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
 
-
-
+# Check if all VMs are running
+az vm list -g $rg --query "[].{Name:name, ProvisioningState:provisioningState}" -o table
 
 
 # Access lnxvm1 Azure Bastion native client
