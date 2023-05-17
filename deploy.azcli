@@ -1,88 +1,114 @@
 #Check Default subscription
 az account list --query "[].{Name:name,Default:isDefault}" -o table
-# Set Default subscription prompt it
-az account set --subscription "Your Subscription Name"
-
+# (Optional) Set Default subscription prompt it
+# az account set --subscription "Your Subscription Name"
+az account set --subscription MSDN_Dmauser
 
 #Paramters
 rg=lab-azsubnet-ext
 location=southcentralus
-sharekey=abc123
 username=azureuser
 password=Msft123Msft123
+sharekey=abc123
+vnet_address_space1=10.0.0.0/24
+vnet_address_space2=172.16.0.0/24
+subnet1_name=subnet1
+subnet1_address_prefix=10.0.0.0/27
+subnet2_name=workload
+subnet2_address_prefix=172.16.0.0/24
+gateway_address_prefix=10.0.0.32/27
+bastion_subnet_address_prefix=10.0.0.64/26
+OnpremisesVPNPublicIP=$(curl -4 -s ifconfig.me) # Adjust based on your scenario
+OnpremisesAddressPrefix=192.168.1.0/24 
 
+# Create Resource Group
+az group create --name $rg --location $location -o none
 
-az group create --name $rg --location $location
-az deployment group create --name Hub1-$location --resource-group $rg \
---template-uri https://raw.githubusercontent.com/dmauser/azure-hub-spoke-base-lab/main/azuredeploy.json \
---parameters https://raw.githubusercontent.com/dmauser/azure-subnet-ext/main/parameters1.json \
---no-wait
+echo "Creating VNET and Subnets..."
+# Create VNET and subnet1
+az network vnet create -g $rg --name vnet1 --address-prefix $vnet_address_space1 $vnet_address_space2 --subnet-name $subnet1_name --subnet-prefix $subnet1_address_prefix --output none
+# Create subnet2
+az network vnet subnet create -g $rg --vnet-name vnet1 --name $subnet2_name --address-prefix $subnet2_address_prefix --output none
 
-# Only continue when deployment is completed
-while [ "$(az deployment group show --resource-group $rg --name Hub1-$location --query properties.provisioningState -o tsv)" != "Succeeded" ]; do echo "Waiting for deployment to complete"; sleep 10; done
+# Create NSG for subnet1 and subnet2
+az network nsg create -g $rg --name nsg1 --location $location --output none
+# Attach NSG to subnet1 and subnet2
+az network vnet subnet update -g $rg --vnet-name vnet1 --name $subnet1_name --nsg nsg1 --output none
+az network vnet subnet update -g $rg --vnet-name vnet1 --name $subnet2_name --nsg nsg1 --output none
 
-# List VPN connections
-az network vpn-connection list --resource-group $rg --query "[].{Name:name,Ip:ipConfigurations[0].privateIpAddress}" -o table
-# List and remove all VPN connections
-vpnconn=$(az network vpn-connection list --resource-group $rg --query "[].name" -o tsv)
-for i in $vpnconn; do az network vpn-connection delete --name $i --resource-group $rg; done
+echo "Creating VMs..."
+# Create Nic1 on Subnet1
+az network nic create -g $rg --name winnva1-nic1 --vnet-name vnet1 --subnet $subnet1_name --output none
+# Create Nic2 on Subnet2
+az network nic create -g $rg --name winnva1-nic2 --vnet-name vnet1 --subnet $subnet2_name --output none
+# Create Windows VM with both nics and no public IP (VM must use Standard_D2s_v3 to get Hyper-V support)
+az vm create -g $rg --name winnva1 --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-smalldisk:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --nics winnva1-nic1 winnva1-nic2 --nsg "" --public-ip-address "" --output none --no-wait
+# Loop until VM is created
+while [ $(az vm show -g $rg -n winnva1 --query provisioningState -o tsv) != "Succeeded" ]; do echo "Waiting for VM to be created..."; sleep 15; done
+# Run powershell command on winvnva1 to install Hyper-V
+az vm run-command invoke -g $rg -n winnva1 --command-id RunPowerShellScript --scripts "Install-WindowsFeature -Name Hyper-V -IncludeManagementTools -Restart" --output none --no-wait
 
-# Create Local Network Gateway for OnPrem
-az network local-gateway create --resource-group $rg --name onprem-lngw \
---gateway-ip-address $(az network public-ip show --resource-group $rg --name OnPrem-vpngw-pip1 --query "ipAddress" -o tsv) \
---local-address-prefixes 192.168.100.0/24 \
---output none
+# Automate
+# Run power shell command get network adapter names and ip addresses
+Get-NetAdapter 
+Get-NetIPAddress | Format-Table
+Get-NetIPConfiguration | Format-Table InterfaceAlias,IPV4Address
 
-# Create Local Network Gateway for Azure 
-az network local-gateway create --resource-group $rg --name azure-lngw \
---gateway-ip-address $(az network public-ip show --resource-group $rg --name Az-Hub1-vpngw-pip1 --query "ipAddress" -o tsv) \
---local-address-prefixes 10.0.0.0/24 10.0.1.0/24 10.0.2.0/24 \
---output none
+New-VMSwitch -Name "External" -AllowManagementOS $true -NetAdapterName "Ethernet 2"
+New-VMSwitch -Name "Extended" -AllowManagementOS $true -NetAdapterName "Ethernet"
 
-# Built VPN connection from Azure to OnPrem
-az network vpn-connection create --name Az-Hub1-to-OnPrem --resource-group $rg \
---vnet-gateway1 Az-Hub1-vpngw --local-gateway2 onprem-lngw \
---shared-key $sharekey --output none
+# Create Ubuntu VM on Subnet1 and no public IP
+az vm create -g $rg --name lxvm1 --image Ubuntu2204 --admin-username $username --admin-password $password --vnet-name vnet1 --subnet $subnet1_name --nsg "" --public-ip-address "" --output none --no-wait
 
-# List public IPS that contains vpngw
-az network public-ip list --resource-group $rg --query "[?contains(name,'vpngw')].{Name:name,IP:ipAddress}" -o table
+# Create Ubuntu VM on Subnet2 and no public IP
+az vm create -g $rg --name lxvm2 --image Ubuntu2204 --admin-username $username --admin-password $password --vnet-name vnet1 --subnet $subnet2_name --nsg "" --public-ip-address "" --output none --no-wait
 
-# Subnet Extention
-# Add 172.16.0.0/24 a new VNET address space to exisiting OnPrem-vnet and Az-spk1-vnet
-az network vnet update --resource-group $rg --name OnPrem-vnet --address-prefixes 192.168.100.0/24 172.16.0.0/24 -o none
-az network vnet update --resource-group $rg --name Az-spk1-vnet --address-prefixes 10.0.1.0/24 172.16.0.0/24 -o none
-# Create a new subnet in OnPrem-vnet
-az network vnet subnet create --resource-group $rg --vnet-name OnPrem-vnet --name subnext --address-prefixes 172.16.0.0/24 --output none
-# Create a new subnet in Az-spk1-vnet
-az network vnet subnet create --resource-group $rg --vnet-name Az-spk1-vnet --name subnext --address-prefixes 172.16.0.0/24 --output none
+echo Waiting VMs to complete provisioning...
+az vm wait -g $rg --created --ids $(az vm list -g $rg --query '[].{id:id}' -o tsv) --only-show-errors -o none
 
-# Azure Bastion
-# Create Azure Bastion subnet in Az-Hub1-vnet
-az network vnet subnet create --resource-group $rg --vnet-name Az-Hub1-vnet --name AzureBastionSubnet --address-prefixes 10.0.0.192/26 --output none
-# Create Public IP for Azure Bastion
-az network public-ip create --resource-group $rg --name Az-Hub1-bastion-pip --sku Standard --location $location --output none
-# Deploy Azure Bastion on Az-Hub1-vnet
-az network bastion create --name Az-Hub1-bastion --resource-group $rg --vnet-name Az-Hub1-vnet --public-ip-address Az-Hub1-bastion-pip --sku basic --location $location --output none --no-wait
+echo "Creating Azure Bastion..."
+# Create Azure Bastion public ip
+az network public-ip create -g $rg --name azbastion-pip --sku Standard --location $location --output none
+# Create Azure Bastion subnet
+az network vnet subnet create -g $rg --vnet-name vnet1 --name AzureBastionSubnet --address-prefix $bastion_subnet_address_prefix --output none
+# Create Azure Bastion with native client support
+az network bastion create -g $rg --name azbastion --public-ip-address azbastion-pip --vnet-name vnet1 --location $location --output none --no-wait --enable-tunneling
 
-# Deploy Windows Server 2022 VM to Az-spk1-vnet using small disk size using cli usind az vm create
-az vm create --resource-group $rg --name az-spk1-wingw --image MicrosoftWindowsServer:WindowsServer:2022-datacenter-azure-edition-smalldisk:latest --size Standard_D2s_v3 --admin-username $username --admin-password $password --vnet-name Az-spk1-vnet --subnet subnet1 --public-ip-address "" --output none --no-wait
+echo "Creating VPN Gateway..."
+# Create VPN Gateway subnet
+az network vnet subnet create -g $rg --vnet-name vnet1 --name GatewaySubnet --address-prefix $gateway_address_prefix --output none
+# Create Public IP for VPN Gateway
+az network public-ip create -g $rg --name azvpngw-pip --allocation-method Dynamic --output none
+# Create VPN Gateway
+az network vnet-gateway create -g $rg --name azvpngw --public-ip-address azvpngw-pip --vnet vnet1 --gateway-type Vpn --vpn-type RouteBased --sku VpnGw1 --output none --no-wait
+# Create Local Network Gateway
+az network local-gateway create -g $rg --name lngw-onprem --gateway-ip-address $OnpremisesVPNPublicIP --local-address-prefixes $OnpremisesAddressPrefix --output none --no-wait
+# Loop until VPN Gateway is created
+while [ $(az network vnet-gateway show -g $rg -n azvpngw --query provisioningState -o tsv) != "Succeeded" ]; do echo "Waiting for VPN Gateway to be created..."; sleep 30; done
+# Create VPN Connection
+az network vpn-connection create -g $rg --name onprem-conn --vnet-gateway1 azvpngw --shared-key $sharekey --local-gateway2 lngw-onprem --location $location --output none
 
-# Deploy Ubuntu VM to subnet subnext in Az-spk1-vnet using cli usind az vm create and static IP 172.16.0.10
-az vm create --resource-group $rg --name az-spk1-extvm --image UbuntuLTS --size Standard_B1ms --admin-username $username --admin-password $password --vnet-name Az-spk1-vnet --subnet subnext --public-ip-address "" --private-ip-address  172.16.0.10 --nsg "" --output none --no-wait
+echo "Dump VPN Gateway Public IP..."
+# Dump VPN Gateway Public IP
+az network public-ip show -g $rg -n azvpngw-pip --query ipAddress -o tsv
 
-# List all VMs from RG and their private IP addresses
-az vm list-ip-addresses --resource-group $rg --query "[].{Name:virtualMachine.name,PrivateIP:virtualMachine.network.privateIpAddresses[0]}" -o table
+# Enable boot diagnostics for all VMs in the rg
+echo "Enabling boot diagnostics for all VMs in the rg..."
+az vm boot-diagnostics enable --ids $(az vm list -g $rg --query "[].id" -o tsv) -o none
 
-# Create a network interface card for az-spk1-wingw on subnet subnext with static IP
-az network nic create --resource-group $rg --name az-spk1-wingw-nic2 --vnet-name Az-spk1-vnet --subnet subnext --private-ip-address 172.16.0.5 --output none
-
-# Stop and deallocate az-spk1-wingw VM
-az vm deallocate --resource-group $rg --name az-spk1-wingw --output none
-az vm nic add --nics az-spk1-wingw-nic2 --resource-group $rg --vm-name az-spk1-wingw --output none
-az vm start --resource-group $rg --name az-spk1-wingw --output none --no-wait
-
-# Run a powershell commmand on az-spk1-wingw VM	
-Install-WindowsFeature -Name Hyper-V -IncludeManagementTools -Restart	
+### Installing tools for networking connectivity validation such as traceroute, tcptraceroute, iperf and others (check link below for more details) 
+echo "Installing net utilities inside VMs (traceroute, tcptraceroute, iperf3, hping3, and others)"
+nettoolsuri="https://raw.githubusercontent.com/dmauser/azure-vm-net-tools/main/script/nettools.sh"
+for vm in `az vm list -g $rg --query "[?storageProfile.imageReference.publisher=='Canonical'].name" -o tsv`
+do
+ az vm extension set \
+ --resource-group $rg \
+ --vm-name $vm \
+ --name customScript \
+ --publisher Microsoft.Azure.Extensions \
+ --protected-settings "{\"fileUris\": [\"$nettoolsuri\"],\"commandToExecute\": \"./nettools.sh\"}" \
+ --no-wait
+done
 
 # Run powershell command to allow ICMPv4 and ICMPv6 traffic for all Windows VMs
 winvm=$(az vm list --resource-group $rg --query "[?storageProfile.osDisk.osType=='Windows'].{Name:name}" -o tsv)
@@ -91,34 +117,57 @@ do
  az vm run-command invoke --resource-group $rg --name $vm --command-id RunPowerShellScript --scripts "Set-NetFirewallRule -DisplayName 'File and Printer Sharing (Echo Request - ICMPv4-In)' -Enabled True" --no-wait --output none; 
 done
 
-# On-premises using Hyper-v
+# Optional - Subscription Cost Savings
+# Configure a loop command for each VM in  from the RG to auto-shutdown at 12:00 AM on the US Central Time Zone
+for vm in $(az vm list -g $rg --query "[].name" -o tsv); do az vm auto-shutdown -g $rg -n $vm --time 05:00 -o none ; done
 
-# Run power shell command get network adapter names and ip addresses
-Get-NetAdapter 
-
-New-VMSwitch -Name "External" -AllowManagementOS $true -NetAdapterName "Ethernet"
-New-VMSwitch -Name "Extended" -AllowManagementOS $true -NetAdapterName "Ethernet 2"
-
-# Install Admin Center on onprem-winvm 
-https://learn.microsoft.com/en-us/windows-server/manage/windows-admin-center/overview
+# Delete Azure Bastion 
+az network bastion delete -g $rg -n azbastion --no-wait --output none
+# Restart VMs on the resource group
+az vm restart --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
+# Stop and deallocate all VMs in the resource group
+az vm deallocate --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
 
 # Delete all VPN connections
-az network vpn-connection list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az network vpn-connection delete --name {} --resource-group $rg --no-wait --output none
+az network vpn-connection list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az network vpn-connection delete --name {} --resource-group $rg --output none
 # Delete VPN Gateway
-az network vnet-gateway delete --name OnPrem-vpngw --resource-group $rg --no-wait --output none
+az network vnet-gateway delete --name azvpngw --resource-group $rg --output none
 
-# Shutdown and deallocate all VMs in the RG
-az vm list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az vm deallocate --name {} --resource-group $rg --no-wait --output none
+# Start all VMs in the resource group
+az vm start --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
 
-# Start all VMs in the RG
-az vm list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az vm start --name {} --resource-group $rg --no-wait --output none
+# Check if all VMs are running
+az vm list -g $rg --query "[].{Name:name, ProvisioningState:provisioningState}" -o table
 
 
-# **** Danger Zone **** 
-# Clean up by deleting resource group
-az group delete --name $rg --yes --no-wait
+# Access lnxvm1 Azure Bastion native client
+rg="lab-azsubnet-ext"
+username=azureuser
+az network bastion ssh -g $rg -n azbastion --target-resource-id $(az vm show -g $rg -n lxvm1 --query id -o tsv) --auth-type password --username $username --output none
 
-# List default subscription
-az account show --query "{Name:name,Id:id,State:state,TenantId:tenantId,IsDefault:isDefault}" -o table
+
+# Access lnxvm2 Azure Bastion native client
+rg="lab-azsubnet-ext"
+az network bastion ssh -g $rg -n azbastion --target-resource-id $(az vm show -g $rg -n lxvm2 --query id -o tsv) --auth-type password --username $username --output none
+
+
+
+# Access winnva1 Azure Bastion native client (Run over CMD or Powershell)
+$rg = "lab-azsubnet-ext"
+az network bastion rdp -g $rg -n azbastion --target-resource-id $(az vm show -g $rg -n winnva1 --query id -o tsv) --output none
+
+# Create UDR for subnet2 to route 192.168.0.0/24 to 172.16.0.251
+az network route-table create -g $rg --name subnet2-rt --location $location --output none
+az network route-table route create -g $rg --name onprem --route-table-name subnet2-rt --address-prefix 192.168.1.0/24 --next-hop-type VirtualAppliance --next-hop-ip-address 172.16.0.251 --output none
+
+# Associate UDR to subnet2
+az network vnet subnet update -g $rg --vnet-name vnet1 --name $subnet2_name --route-table subnet2-rt --output none
+
+
+# HotFix for both Win Network Extension Gateways
+stop-service extnwagent                                                                         
+start-BitsTransfer -source "https://github.com/dmauser/azure-subnet-ext/raw/main/hotfix/ExtendedNwAgent.exe" -destination "C:\program files\Azure Extended Network Agent\ExtendedNwAgent.exe"
+start-service extnwagent
+
 
 
