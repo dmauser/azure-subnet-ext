@@ -157,5 +157,10 @@ az network route-table route create -g $rg --name onprem --route-table-name subn
 az network vnet subnet update -g $rg --vnet-name vnet1 --name $subnet2_name --route-table subnet2-rt --output none
 
 
+# HotFix for both Win Network Extension Gateways
+stop-service extnwagent                                                                         
+start-BitsTransfer -source "https://github.com/dmauser/azure-subnet-ext/raw/main/hotfix/ExtendedNwAgent.exe" -destination "C:\program files\Azure Extended Network Agent\ExtendedNwAgent.exe"
+start-service extnwagent
+
 
 
