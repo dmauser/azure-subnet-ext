@@ -2,17 +2,45 @@
 
 Lab notes for Subnet Extension feature using Windows Server 2022
 
-Azure side:
-1. Deploy script which builds an Hub and two Spokes
+### Azure side
 
-On-Premises side:
-1. Hyper-V on Windows 11
-2. Two Windows Server VMs (Windows 2019 or 2022)
-3. Enable Neste Virtualization on them
-4. Create two networks over Hyper-V Switch. LAN and Extended
-5. Extended Network uses 172.16.0.0/24
-6. Install Hyper-V role on Windows Server 2022 VM
-7. Install Windows Admin Center
+Deploy script which builds an Azure VNET with VPN Gateway and three VMs.
+
+### On-Premises side
+
+1. Hyper-V on Windows 11/Windows Server 2022
+2. You should have a total of three networks for this solution via Hyper-V Switch:
+ - External (for VPN connectivity)
+ - LAN
+ - Extended
+1. Two Windows Server VMs (Windows Server 2022) - One is the LAN Router/VPN Server
+1. Two other Windows or Linux VMs. One in the LAN and another in the Extended Network.
+
+#### LAN Router/VPN Server configuration
+
+- Install three NICs (External, LAN and Extended)
+
+#### Onprem-winnva VM:
+
+- Expose two NICs (one for LAN and another for Extended network)
+- Install Hyper-V role on Windows Server 2022 VM
+- Enable Nested Virtualization
+
+## Solution considerations
+
+- Routing will be asymmetric​
+- If you have a firewall between Azure and On-premises: ​
+   - Disable sequence number randomization ​
+   - Enable TCP state bypass​
+   - Require UDP port 4789 open both directions​
+
+​- MTU reduced due to VXLAN overhead​
+- Broadcasts aren’t going to broadcast (can’t bring your own DHCP, PXE, etc)
+- ​The first three addresses are reserved in Azure subnets​
+- Azure Virtual Network Router requires the first address in the subnet
+- ​A slight increase in Latency and throughput may be reduced to ~1Gbps​
+- One appliance pair required per subnet must always be running​
+- Additional steps may be required if using some form of SDN on-prem
 
 References:
 https://learn.microsoft.com/en-us/azure/virtual-network/subnet-extension
@@ -26,9 +54,3 @@ https://www.hciharrison.com/azure-stack-hci/azure-extended-networks/
 Alternatives:
 https://github.com/microsoft/Azure-LISP
 
-
-To do:
-- Remove Public IP from All VMS (update JSON) + Bastion
-- Automate part of the Windows 2022 Extended Subnet portion.
-- 
-- 
