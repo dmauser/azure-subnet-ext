@@ -1,0 +1,50 @@
+# Optional - Azure Side Subscription Cost Savings
+# Configure a loop command for each VM in  from the RG to auto-shutdown at 12:00 AM on the US Central Time Zone
+for vm in $(az vm list -g $rg --query "[].name" -o tsv); do az vm auto-shutdown -g $rg -n $vm --time 05:00 -o none ; done
+
+# Delete Azure Bastion 
+az network bastion delete -g $rg -n azbastion --no-wait --output none
+# Restart VMs on the resource group
+az vm restart --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
+# Stop and deallocate all VMs in the resource group
+az vm deallocate --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
+
+# Delete all VPN connections
+az network vpn-connection list --resource-group $rg --query "[].{Name:name}" -o tsv | xargs -I {} az network vpn-connection delete --name {} --resource-group $rg --output none
+# Delete VPN Gateway
+az network vnet-gateway delete --name azvpngw --resource-group $rg --output none
+
+# Start all VMs in the resource group
+az vm start --ids $(az vm list -g $rg --query "[].id" -o tsv) --no-wait --output none
+
+# Check if all VMs are running
+az vm list -g $rg --query "[].{Name:name, ProvisioningState:provisioningState}" -o table
+
+# Run powershell command to allow ICMPv4 and ICMPv6 traffic for all Windows VMs
+winvm=$(az vm list --resource-group $rg --query "[?storageProfile.osDisk.osType=='Windows'].{Name:name}" -o tsv)
+for vm in $winvm; 
+do 
+ az vm run-command invoke --resource-group $rg --name $vm --command-id RunPowerShellScript --scripts "Set-NetFirewallRule -DisplayName 'File and Printer Sharing (Echo Request - ICMPv4-In)' -Enabled True" --no-wait --output none; 
+done
+
+
+# VLAN Extention configuration on both WinNVAs (On-premsies and Azure): 
+# Use Reference: Extend your on-premises subnets into Azure using extended network for Azure
+https://learn.microsoft.com/en-us/windows-server/manage/windows-admin-center/azure/azure-extended-network
+# Powershell reference aids:
+# To late Automate
+# Run power shell command get network adapter names and ip addresses
+Get-NetAdapter 
+Get-NetIPAddress | Format-Table
+Get-NetIPConfiguration | Format-Table InterfaceAlias,IPV4Address
+
+New-VMSwitch -Name "External" -AllowManagementOS $true -NetAdapterName "Ethernet 2"
+New-VMSwitch -Name "Extended" -AllowManagementOS $true -NetAdapterName "Ethernet"
+
+# HotFix to allow access host outside of extended network:
+stop-service extnwagent                                                                         
+start-BitsTransfer -source "https://github.com/dmauser/azure-subnet-ext/raw/main/hotfix/ExtendedNwAgent.exe" -destination "C:\program files\Azure Extended Network Agent\ExtendedNwAgent.exe"
+start-service extnwagent
+
+
+
